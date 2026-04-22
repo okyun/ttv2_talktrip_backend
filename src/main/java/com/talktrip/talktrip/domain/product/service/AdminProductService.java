@@ -34,6 +34,8 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class AdminProductService {
 
+    private static final long FIXED_SELLER_ID = 4L;
+
     private final ProductRepository productRepository;
     private final CountryRepository countryRepository;
     private final MemberRepository memberRepository;
@@ -46,7 +48,7 @@ public class AdminProductService {
     @Transactional
     public void createProduct(AdminProductCreateRequest request, Long memberId,
                               MultipartFile thumbnailImage, List<MultipartFile> detailImages) {
-        Member member = memberRepository.findById(memberId)
+        Member member = memberRepository.findById(FIXED_SELLER_ID)
                 .orElseThrow(() -> new MemberException(ErrorCode.ADMIN_NOT_FOUND));
 
         Country country = countryRepository.findByName(request.countryName())

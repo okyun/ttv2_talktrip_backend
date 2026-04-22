@@ -1,7 +1,8 @@
 package com.talktrip.talktrip.global.config;
 
+import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.fasterxml.jackson.databind.jsontype.BasicPolymorphicTypeValidator;
 import lombok.RequiredArgsConstructor;
 import org.springframework.cache.CacheManager;
 import org.springframework.cache.annotation.EnableCaching;
@@ -42,8 +43,20 @@ public class CacheConfig {
      */
     @Bean
     public CacheManager cacheManager(RedisConnectionFactory connectionFactory, ObjectMapper objectMapper) {
+        // Cache 직렬화는 역직렬화 시점에 반환 타입 정보를 잃기 쉬우므로(LinkedHashMap으로 복원),
+        // Redis 캐시 전용 ObjectMapper에 타입 메타데이터를 포함시켜 저장합니다.
+        ObjectMapper redisObjectMapper = objectMapper.copy();
+        redisObjectMapper.activateDefaultTyping(
+                BasicPolymorphicTypeValidator.builder()
+                        .allowIfSubType("com.talktrip.talktrip")
+                        .allowIfSubType("java.util")
+                        .build(),
+                ObjectMapper.DefaultTyping.NON_FINAL,
+                JsonTypeInfo.As.PROPERTY
+        );
+
         // JSON 직렬화 설정
-        GenericJackson2JsonRedisSerializer jsonSerializer = new GenericJackson2JsonRedisSerializer(objectMapper);
+        GenericJackson2JsonRedisSerializer jsonSerializer = new GenericJackson2JsonRedisSerializer(redisObjectMapper);
         
         // Redis 캐시 기본 설정
         RedisCacheConfiguration defaultCacheConfig = RedisCacheConfiguration.defaultCacheConfig()
@@ -54,10 +67,10 @@ public class CacheConfig {
         
         return RedisCacheManager.builder(connectionFactory)
                 .cacheDefaults(defaultCacheConfig)
-                .withCacheConfiguration("user", createCacheConfig(Duration.ofMinutes(60), objectMapper)) // 사용자 정보: 1시간
-                .withCacheConfiguration("product", createCacheConfig(Duration.ofMinutes(15), objectMapper)) // 상품 정보: 15분
-                .withCacheConfiguration("chat", createCacheConfig(Duration.ofMinutes(5), objectMapper)) // 채팅 정보: 5분
-                .withCacheConfiguration("order", createCacheConfig(Duration.ofMinutes(10), objectMapper)) // 주문 정보: 10분
+                .withCacheConfiguration("user", createCacheConfig(Duration.ofMinutes(60), redisObjectMapper)) // 사용자 정보: 1시간
+                .withCacheConfiguration("product", createCacheConfig(Duration.ofMinutes(15), redisObjectMapper)) // 상품 정보: 15분
+                .withCacheConfiguration("chat", createCacheConfig(Duration.ofMinutes(5), redisObjectMapper)) // 채팅 정보: 5분
+                .withCacheConfiguration("order", createCacheConfig(Duration.ofMinutes(10), redisObjectMapper)) // 주문 정보: 10분
                 .build();
     }
 

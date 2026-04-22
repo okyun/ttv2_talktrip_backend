@@ -29,6 +29,7 @@ public class ProductService {
     private final ProductRepository productRepository;
     private final ReviewRepository reviewRepository;
     private final LikeRepository likeRepository;
+    private final ProductSearchCacheService productSearchCacheService;
 
     private final RestTemplate restTemplate = new RestTemplate();
 
@@ -37,8 +38,11 @@ public class ProductService {
 
     /**
      * 상품 목록(검색·국가·정렬·페이지).
-     * Redis {@code @Cacheable}는 JSON 역직렬화 시 LinkedHashMap만 되어 ClassCastException(프록시/브라우저에선 403처럼 보일 수 있음)이 나기 쉬워 캐시를 쓰지 않는다.
+     * 제품 목록은 조회가 잦으므로 Redis 캐시를 쓰되, Page 직렬화 문제를 피하려고
+     * {@link com.talktrip.talktrip.domain.product.dto.response.ProductSearchPageCache}로 저장합니다.
+     * 로그인 사용자의 "좋아요"는 사용자별 데이터이므로 캐시된 base 목록 위에 덧씌우는 방식으로 처리합니다.
      */
+    @SuppressWarnings("null")
     @Transactional(readOnly = true)
     public Page<ProductSummaryResponse> searchProducts(
             String keyword,
@@ -46,37 +50,37 @@ public class ProductService {
             Long memberId,
             Pageable pageable
     ) {
-        Page<Product> page = (keyword == null || keyword.isBlank())
-                ? productRepository.findVisibleProducts(countryName, pageable)
-                : productRepository.searchByKeywords(
-                Arrays.stream(keyword.trim().split("\\s+"))
-                        .filter(s -> !s.isBlank()).toList(),
-                countryName,
-                pageable
-        );
+        Page<ProductSummaryResponse> basePage = productSearchCacheService
+                .getBaseProductSearchPageCache(keyword, countryName, pageable)
+                .toPage(pageable);
 
-        List<Product> products = page.getContent();
-        if (products.isEmpty()) {
-            return new PageImpl<>(List.of(), pageable, page.getTotalElements());
+        if (memberId == null || basePage.isEmpty()) {
+            return basePage;
         }
 
-        List<Long> productIds = products.stream().map(Product::getId).toList();
+        List<Long> productIds = basePage.getContent().stream()
+                .map(ProductSummaryResponse::productId)
+                .toList();
 
-        Map<Long, Double> avgStarMap = reviewRepository.fetchAvgStarsByProductIds(productIds);
+        Set<Long> likedProductIds = likeRepository.findLikedProductIds(memberId, productIds);
 
-        Set<Long> likedProductIds = (memberId == null)
-                ? Set.of()
-                : likeRepository.findLikedProductIds(memberId, productIds);
+        List<ProductSummaryResponse> withLikes = basePage.getContent().stream()
+                .map(p -> new ProductSummaryResponse(
+                        p.productId(),
+                        p.productName(),
+                        p.productDescription(),
+                        p.thumbnailImageUrl(),
+                        p.price(),
+                        p.discountPrice(),
+                        p.averageReviewStar(),
+                        likedProductIds.contains(p.productId())
+                ))
+                .toList();
 
-        List<ProductSummaryResponse> content = products.stream().map(p -> {
-            float avgStar = avgStarMap.getOrDefault(p.getId(), 0.0).floatValue();
-            boolean liked = likedProductIds.contains(p.getId());
-            return ProductSummaryResponse.from(p, avgStar, liked);
-        }).toList();
-
-        return new PageImpl<>(content, pageable, page.getTotalElements());
+        return new PageImpl<>(withLikes, pageable, basePage.getTotalElements());
     }
 
+    @SuppressWarnings("null")
     @Transactional(readOnly = true)
     public ProductDetailResponse getProductDetail(
             Long productId,
@@ -111,6 +115,7 @@ public class ProductService {
         return ProductDetailResponse.from(product, avgStar, reviewResponses, isLiked);
     }
 
+    @SuppressWarnings("null")
     @Transactional(readOnly = true)
     public List<ProductSummaryResponse> aiSearchProducts(
             String query,

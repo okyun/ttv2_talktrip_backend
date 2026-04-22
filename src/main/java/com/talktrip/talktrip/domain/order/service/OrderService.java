@@ -249,18 +249,7 @@ public class OrderService {
 
         orderRepository.save(order);
 
-        // 8. 결제 성공 이벤트 발행
-        try {
-            orderEventPublisher.publishPaymentSuccess(order, payment);
-            logger.info("결제 성공 이벤트 발행 완료: orderId={}, orderCode={}, paymentKey={}", 
-                    order.getId(), order.getOrderCode(), payment.getPaymentKey());
-        } catch (Exception e) {
-            logger.error("결제 성공 이벤트 발행 실패: orderId={}, orderCode={}", 
-                    order.getId(), order.getOrderCode(), e);
-            // 이벤트 발행 실패는 결제 처리에 영향을 주지 않음
-        }
-
-        // 9. 결제 성공 WebSocket 알림 (트랜잭션 커밋 후, 사용자별 채널로 전송)
+        // 8. 결제 성공 WebSocket 알림 (트랜잭션 커밋 후, 사용자별 채널로 전송)
         try {
             String email = order.getMember().getAccountEmail();
             String message = "주문이 완료되었습니다. 주문코드: " + order.getOrderCode();
@@ -271,7 +260,7 @@ public class OrderService {
                     order.getId(), order.getOrderCode(), e.getMessage());
         }
 
-        // 10. 결제 성공 알림/이메일 작업 큐에 적재 (Redis Streams)
+        // 9. 결제 성공 알림/이메일 작업 큐에 적재 (Redis Streams)
         //     Consumer(별도 워커)가 stream:order:notification 을 읽어 이메일/푸시 발송을 처리한다.
         orderNotificationStreamService.enqueueOrderCompleted(order, payment);
     }

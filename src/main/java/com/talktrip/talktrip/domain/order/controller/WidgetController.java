@@ -1,8 +1,9 @@
 package com.talktrip.talktrip.domain.order.controller;
 
+import com.talktrip.talktrip.domain.messaging.avro.KafkaEventProducer;
+import com.talktrip.talktrip.domain.messaging.dto.order.PaymentSuccessEventDTO;
 import com.talktrip.talktrip.domain.order.entity.Order;
 import com.talktrip.talktrip.domain.order.repository.OrderRepository;
-import com.talktrip.talktrip.domain.order.service.OrderService;
 import com.talktrip.talktrip.domain.order.service.PaymentSuccessStreamProducer;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -26,6 +27,7 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.Reader;
 import java.net.HttpURLConnection;
+import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
@@ -40,16 +42,16 @@ public class WidgetController {
     private String widgetSecretKey;
 
     private final OrderRepository orderRepository;
-    private final OrderService orderService;
     private final PaymentSuccessStreamProducer paymentSuccessStreamProducer;
+    private final KafkaEventProducer kafkaEventProducer;
     private final Logger logger = LoggerFactory.getLogger(this.getClass());
 
     public WidgetController(OrderRepository orderRepository,
-                            OrderService orderService,
-                            PaymentSuccessStreamProducer paymentSuccessStreamProducer) {
+                            PaymentSuccessStreamProducer paymentSuccessStreamProducer,
+                            KafkaEventProducer kafkaEventProducer) {
         this.orderRepository = orderRepository;
-        this.orderService = orderService;
         this.paymentSuccessStreamProducer = paymentSuccessStreamProducer;
+        this.kafkaEventProducer = kafkaEventProducer;
     }
 
     @Operation(summary = "결제 진행", description = "주문 정보와 결제 정보를 입력받아 결제를 진행하고, 결제 여부를 반환합니다.")
@@ -80,7 +82,7 @@ public class WidgetController {
         byte[] encodedBytes = encoder.encode((widgetSecretKey + ":").getBytes(StandardCharsets.UTF_8));
         String authorization = "Basic " + new String(encodedBytes);
 
-        URL url = new URL("https://api.tosspayments.com/v1/payments/confirm");
+        URL url = URI.create("https://api.tosspayments.com/v1/payments/confirm").toURL();
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
         connection.setRequestProperty("Authorization", authorization);
         connection.setRequestProperty("Content-Type", "application/json");
@@ -101,8 +103,22 @@ public class WidgetController {
         if (isSuccess) {
             Optional<Order> optionalOrder = orderRepository.findByOrderCode(orderId);
             if (optionalOrder.isPresent()) {
+                Order order = optionalOrder.get();
                 // 결제 성공 처리는 Redis Stream 워커(PaymentSuccessStreamWorker)가 담당
                 paymentSuccessStreamProducer.enqueuePaymentSuccess(orderId, paymentKey, responseJson);
+
+                // 결제 성공 이메일 트리거를 위한 Kafka 이벤트를 "여기서" 즉시 발행한다.
+                // (중복 이메일 방지를 위해, 워커/OrderService 쪽에서는 payment-success Kafka 발행을 하지 않도록 분리한다.)
+                PaymentSuccessEventDTO dto = PaymentSuccessEventDTO.builder()
+                        .orderId(order.getId())
+                        .orderCode(order.getOrderCode())
+                        .memberEmail(order.getMember() != null ? order.getMember().getAccountEmail() : null)
+                        .paymentKey(paymentKey)
+                        .method((String) responseJson.get("method"))
+                        .status((String) responseJson.get("status"))
+                        .receiptUrl((String) responseJson.get("receiptUrl"))
+                        .build();
+                kafkaEventProducer.publishPaymentSuccess(dto);
             } else {
                 logger.warn("주문 ID를 찾을 수 없습니다: {}", orderId);
             }

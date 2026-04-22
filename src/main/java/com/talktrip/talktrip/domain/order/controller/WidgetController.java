@@ -2,12 +2,14 @@ package com.talktrip.talktrip.domain.order.controller;
 
 import com.talktrip.talktrip.domain.messaging.avro.KafkaEventProducer;
 import com.talktrip.talktrip.domain.messaging.dto.order.PaymentSuccessEventDTO;
+import com.talktrip.talktrip.domain.order.dto.request.PaymentConfirmRequestDTO;
 import com.talktrip.talktrip.domain.order.entity.Order;
 import com.talktrip.talktrip.domain.order.repository.OrderRepository;
 import com.talktrip.talktrip.domain.order.service.PaymentSuccessStreamProducer;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
 import org.json.simple.JSONObject;
 import org.json.simple.parser.JSONParser;
 import org.json.simple.parser.ParseException;
@@ -55,33 +57,16 @@ public class WidgetController {
     }
 
     @Operation(summary = "결제 진행", description = "주문 정보와 결제 정보를 입력받아 결제를 진행하고, 결제 여부를 반환합니다.")
-    @PostMapping(value = "/confirm")
-    public ResponseEntity<JSONObject> confirmPayment(@RequestBody String jsonBody) throws Exception {
-
-        JSONParser parser = new JSONParser();
-
-        String orderId;
-        String amount;
-        String paymentKey;
-
-        try {
-            JSONObject requestData = (JSONObject) parser.parse(jsonBody);
-            paymentKey = (String) requestData.get("paymentKey");
-            orderId = (String) requestData.get("orderId");
-            amount = (String) requestData.get("amount");
-        } catch (ParseException e) {
-            throw new RuntimeException("JSON 파싱 오류", e);
-        }
+    @PostMapping("/confirm")
+    public ResponseEntity<JSONObject> confirmPayment(@Valid @RequestBody PaymentConfirmRequestDTO request) throws Exception {
 
         JSONObject requestJson = new JSONObject();
-        requestJson.put("orderId", orderId);
-        requestJson.put("amount", amount);
-        requestJson.put("paymentKey", paymentKey);
+        requestJson.put("orderId", request.getOrderId());
+        requestJson.put("amount", request.getAmount());
+        requestJson.put("paymentKey", request.getPaymentKey());
 
-        Base64.Encoder encoder = Base64.getEncoder();
-        byte[] encodedBytes = encoder.encode((widgetSecretKey + ":").getBytes(StandardCharsets.UTF_8));
-        String authorization = "Basic " + new String(encodedBytes);
-
+        String authorization = "Basic " + Base64.getEncoder()
+                .encodeToString((widgetSecretKey + ":").getBytes(StandardCharsets.UTF_8));
         URL url = URI.create("https://api.tosspayments.com/v1/payments/confirm").toURL();
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
         connection.setRequestProperty("Authorization", authorization);
@@ -89,39 +74,48 @@ public class WidgetController {
         connection.setRequestMethod("POST");
         connection.setDoOutput(true);
 
-        OutputStream outputStream = connection.getOutputStream();
-        outputStream.write(requestJson.toString().getBytes(StandardCharsets.UTF_8));
+        try (OutputStream outputStream = connection.getOutputStream()) {
+            outputStream.write(requestJson.toString().getBytes(StandardCharsets.UTF_8));
+        }
 
         int code = connection.getResponseCode();
-        boolean isSuccess = code == 200;
+        boolean isSuccess = code >= 200 && code < 300;
 
         InputStream responseStream = isSuccess ? connection.getInputStream() : connection.getErrorStream();
-        Reader reader = new InputStreamReader(responseStream, StandardCharsets.UTF_8);
-        JSONObject responseJson = (JSONObject) parser.parse(reader);
-        responseStream.close();
+
+        JSONParser parser = new JSONParser();
+        JSONObject responseJson;
+        try (Reader reader = new InputStreamReader(responseStream, StandardCharsets.UTF_8)) {
+            responseJson = (JSONObject) parser.parse(reader);
+        }
 
         if (isSuccess) {
-            Optional<Order> optionalOrder = orderRepository.findByOrderCode(orderId);
+            Optional<Order> optionalOrder = orderRepository.findByOrderCode(request.getOrderId());
             if (optionalOrder.isPresent()) {
                 Order order = optionalOrder.get();
-                // 결제 성공 처리는 Redis Stream 워커(PaymentSuccessStreamWorker)가 담당
-                paymentSuccessStreamProducer.enqueuePaymentSuccess(orderId, paymentKey, responseJson);
 
-                // 결제 성공 이메일 트리거를 위한 Kafka 이벤트를 "여기서" 즉시 발행한다.
-                // (중복 이메일 방지를 위해, 워커/OrderService 쪽에서는 payment-success Kafka 발행을 하지 않도록 분리한다.)
+                paymentSuccessStreamProducer.enqueuePaymentSuccess(
+                        request.getOrderId(),
+                        request.getPaymentKey(),
+                        responseJson
+                );
+
                 PaymentSuccessEventDTO dto = PaymentSuccessEventDTO.builder()
                         .orderId(order.getId())
                         .orderCode(order.getOrderCode())
                         .memberEmail(order.getMember() != null ? order.getMember().getAccountEmail() : null)
-                        .paymentKey(paymentKey)
+                        .paymentKey(request.getPaymentKey())
                         .method((String) responseJson.get("method"))
                         .status((String) responseJson.get("status"))
                         .receiptUrl((String) responseJson.get("receiptUrl"))
                         .build();
+
                 kafkaEventProducer.publishPaymentSuccess(dto);
             } else {
-                logger.warn("주문 ID를 찾을 수 없습니다: {}", orderId);
+                logger.warn("주문 ID를 찾을 수 없습니다: {}", request.getOrderId());
             }
+        } else {
+            logger.error("토스 결제 승인 실패. status={}, response={}", code, responseJson.toJSONString());
         }
 
         return ResponseEntity.status(code).body(responseJson);

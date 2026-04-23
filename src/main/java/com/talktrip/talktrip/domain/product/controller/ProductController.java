@@ -3,6 +3,7 @@ package com.talktrip.talktrip.domain.product.controller;
 import com.talktrip.talktrip.domain.product.dto.response.ProductDetailResponse;
 import com.talktrip.talktrip.domain.product.dto.response.ProductSummaryResponse;
 import com.talktrip.talktrip.domain.product.service.ProductService;
+import com.talktrip.talktrip.domain.messaging.avro.KafkaEventProducer;
 import com.talktrip.talktrip.global.security.CustomMemberDetails;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -29,6 +30,7 @@ public class ProductController {
     private static final Logger logger = LoggerFactory.getLogger(ProductController.class);
 
     private final ProductService productService;
+    private final KafkaEventProducer kafkaEventProducer;
 
     @Operation(summary = "상품 목록 검색")
     @GetMapping
@@ -56,6 +58,11 @@ public class ProductController {
     ) {
         Pageable pageable = PageRequest.of(page, size, buildSort(sort));
         Long memberId = (memberDetails != null) ? memberDetails.getId() : null;
+        try {
+            kafkaEventProducer.publishProductClick(productId, memberId);
+        } catch (Exception e) {
+            logger.warn("상품 클릭 이벤트 발행 실패(상세 조회는 계속 진행): productId={}, memberId={}", productId, memberId, e);
+        }
         return ResponseEntity.ok(productService.getProductDetail(productId, memberId, pageable));
     }
 

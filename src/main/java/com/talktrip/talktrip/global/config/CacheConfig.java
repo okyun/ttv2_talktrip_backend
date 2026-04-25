@@ -68,7 +68,7 @@ public class CacheConfig {
         return RedisCacheManager.builder(connectionFactory)
                 .cacheDefaults(defaultCacheConfig)
                 .withCacheConfiguration("user", createCacheConfig(Duration.ofMinutes(60), redisObjectMapper)) // 사용자 정보: 1시간
-                .withCacheConfiguration("product", createCacheConfig(Duration.ofMinutes(15), redisObjectMapper)) // 상품 정보: 15분
+                .withCacheConfiguration("product", createCacheConfig(Duration.ofMinutes(3), redisObjectMapper)) // 상품 목록/검색 캐시(productSearch:v3:…): 3분
                 .withCacheConfiguration("chat", createCacheConfig(Duration.ofMinutes(5), redisObjectMapper)) // 채팅 정보: 5분
                 .withCacheConfiguration("order", createCacheConfig(Duration.ofMinutes(10), redisObjectMapper)) // 주문 정보: 10분
                 .build();

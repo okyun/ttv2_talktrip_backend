@@ -1,5 +1,6 @@
 package com.talktrip.talktrip.domain.like.controller;
 
+import com.talktrip.talktrip.domain.like.dto.request.LikeDesiredStateRequest;
 import com.talktrip.talktrip.domain.like.service.LikeService;
 import com.talktrip.talktrip.domain.product.dto.response.ProductSummaryResponse;
 import com.talktrip.talktrip.global.security.CustomMemberDetails;
@@ -30,6 +31,16 @@ public class LikeController {
     public ResponseEntity<Void> toggleLike(@PathVariable Long productId,
                                            @AuthenticationPrincipal CustomMemberDetails memberDetails) {
         likeService.toggleLike(productId, memberDetails.getId());
+        return ResponseEntity.ok().build();
+    }
+
+    @Operation(summary = "상품 좋아요 목표 상태 설정(멱등, 재시도에 유리)")
+    @PutMapping("/products/{productId}/like")
+    public ResponseEntity<Void> setLikeDesiredState(
+            @PathVariable Long productId,
+            @RequestBody LikeDesiredStateRequest body,
+            @AuthenticationPrincipal CustomMemberDetails memberDetails) {
+        likeService.setLikeDesiredState(productId, memberDetails.getId(), body.liked());
         return ResponseEntity.ok().build();
     }
 

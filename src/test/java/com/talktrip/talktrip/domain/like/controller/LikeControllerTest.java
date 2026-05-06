@@ -1,6 +1,8 @@
 // src/test/java/com/talktrip/talktrip/domain/like/controller/LikeControllerTest.java
 package com.talktrip.talktrip.domain.like.controller;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.talktrip.talktrip.domain.like.dto.request.LikeDesiredStateRequest;
 import com.talktrip.talktrip.domain.like.service.LikeService;
 import com.talktrip.talktrip.domain.member.entity.Member;
 import com.talktrip.talktrip.domain.member.enums.MemberRole;
@@ -43,6 +45,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @ActiveProfiles("test")
@@ -52,6 +55,7 @@ class LikeControllerTest {
 
     @Autowired MockMvc mockMvc;
     @Autowired LikeService likeService;
+    @Autowired ObjectMapper objectMapper;
 
     @TestConfiguration
     static class TestConfig {
@@ -144,6 +148,34 @@ class LikeControllerTest {
                     .andExpect(status().isNotFound())
                     .andExpect(jsonPath(JSON_ERROR_CODE).value(ERR_PRODUCT_NOT_FOUND))
                     .andExpect(jsonPath(JSON_MESSAGE).value(MSG_PRODUCT_NOT_FOUND));
+        }
+    }
+
+    @Nested
+    @DisplayName("PUT " + EP_TOGGLE_LIKE + " (좋아요 목표 상태)")
+    class SetLikeDesiredState {
+
+        @Test @DisplayName("200 OK liked=true")
+        void setLiked_true() throws Exception {
+            willDoNothing().given(likeService).setLikeDesiredState(eq(PRODUCT_ID), eq(USER_ID), eq(true));
+
+            mockMvc.perform(put(EP_TOGGLE_LIKE, PRODUCT_ID)
+                            .with(authentication(authUser()))
+                            .with(csrf())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(new LikeDesiredStateRequest(true))))
+                    .andExpect(status().isOk());
+
+            then(likeService).should().setLikeDesiredState(PRODUCT_ID, USER_ID, true);
+        }
+
+        @Test @DisplayName("401 인증 없음")
+        void unauth() throws Exception {
+            mockMvc.perform(put(EP_TOGGLE_LIKE, PRODUCT_ID)
+                            .with(csrf())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(new LikeDesiredStateRequest(false))))
+                    .andExpect(status().isUnauthorized());
         }
     }
 

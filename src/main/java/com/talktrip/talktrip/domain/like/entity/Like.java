@@ -14,7 +14,10 @@ import lombok.NoArgsConstructor;
 @Getter
 @AllArgsConstructor
 @NoArgsConstructor
-@Table(name = "likes")
+@Table(
+        name = "likes",
+        uniqueConstraints = @UniqueConstraint(name = "uk_likes_member_product", columnNames = {"member_id", "product_id"})
+)
 public class Like extends BaseEntity {
 
     @Id

@@ -1,8 +1,8 @@
 package com.talktrip.talktrip.domain.messaging.avro;
 
+import com.talktrip.talktrip.domain.messaging.dto.like.LikeChangeEventDTO;
 import com.talktrip.talktrip.domain.messaging.dto.order.OrderCreatedEventDTO;
 import com.talktrip.talktrip.domain.messaging.dto.order.PaymentSuccessEventDTO;
-import com.talktrip.talktrip.domain.messaging.dto.product.ProductClickEventDTO;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,9 +41,8 @@ public class KafkaEventProducer {
     @Value("${kafka.topics.payment-success:payment-success}")
     private String paymentSuccessTopic;
 
-    // 상품 클릭 이벤트를 발행할 토픽
-    @Value("${kafka.topics.product-click:product-click}")
-    private String productClickTopic;
+    @Value("${kafka.topics.like-change:like-change}")
+    private String likeChangeTopic;
 
     // ========== Order Event Methods ==========
 
@@ -131,71 +130,6 @@ public class KafkaEventProducer {
         }
     }
 
-    // ========== Product Event Methods ==========
-
-    /**
-     * 상품 클릭 이벤트 발행 (JSON 형식)
-     *
-     * @param productId 상품 ID
-     */
-    public void publishProductClick(Long productId) {
-        publishProductClick(productId, null);
-    }
-
-    /**
-     * 상품 클릭 이벤트 발행 (JSON 형식) - String productId
-     *
-     * @param productId 상품 ID (String)
-     */
-    public void publishProductClick(String productId) {
-        try {
-            Long productIdLong = Long.parseLong(productId);
-            publishProductClick(productIdLong, null);
-        } catch (NumberFormatException e) {
-            logger.error("상품 ID 파싱 실패: productId={}", productId, e);
-            throw new IllegalArgumentException("유효하지 않은 상품 ID: " + productId, e);
-        }
-    }
-
-    /**
-     * 상품 클릭 이벤트 발행 (JSON 형식) - memberId 포함
-     *
-     * @param productId 상품 ID
-     * @param memberId  회원 ID (null 가능)
-     */
-    public void publishProductClick(Long productId, Long memberId) {
-        try {
-            ProductClickEventDTO event = ProductClickEventDTO.of(productId, memberId);
-
-            // [Kafka 전송 흐름]
-            // - 전송 대상 토픽: ${kafka.topics.product-click:product-click}
-            //   - 설정 위치: `tt/back_end/src/main/resources/application.yml` (kafka.topics.product-click)
-            // - 이 토픽을 구독(@KafkaListener)하는 서비스/파일 예시:
-            //   - `talktrip-product-click-service/.../messaging/consumer/ProductClickDebugConsumer.java`
-            // - 또한 Kafka Streams 집계가 이 토픽을 입력으로 사용합니다(현재 집계는 `talktrip-stats-service`가 담당).
-            // 여기서도 마찬가지로 send(...) 는 비동기 호출이고,
-            // whenComplete(...) 콜백 안에서 성공/실패 여부에 따라 로그만 남기고 있습니다.
-            // 비즈니스 로직(트랜잭션 커밋 여부 등)은 send() 호출 이전에 이미 끝난 상태여야 안전합니다.
-            jsonKafkaTemplate.send(productClickTopic, String.valueOf(productId), event)
-                    .whenComplete((result, ex) -> {
-                        if (ex == null) {
-                            logger.info("JSON 상품 클릭 이벤트 발행 성공: productId={}, memberId={}, topic={}, partition={}, offset={}",
-                                    productId, memberId,
-                                    result.getRecordMetadata().topic(),
-                                    result.getRecordMetadata().partition(),
-                                    result.getRecordMetadata().offset());
-                        } else {
-                            logger.error("JSON 상품 클릭 이벤트 발행 실패: productId={}, memberId={}",
-                                    productId, memberId, ex);
-                        }
-                    });
-        } catch (Exception e) {
-            logger.error("JSON 상품 클릭 이벤트 발행 중 오류 발생: productId={}, memberId={}",
-                    productId, memberId, e);
-            throw new RuntimeException("JSON 상품 클릭 이벤트 발행 실패", e);
-        }
-    }
-
     /**
      * 주문 이벤트 발행 (JSON 형식) - 직접 파라미터로 받기
      *
@@ -238,14 +172,28 @@ public class KafkaEventProducer {
     }
 
     /**
-     * 상품 이벤트 발행 (JSON 형식) - 직접 파라미터로 받기
-     *
-     * @param productId 상품 ID
-     * @param memberId  회원 ID (nullable)
+     * 좋아요 변경 이벤트 (write-behind 스케줄러가 배치로 호출) → like-service DB 동기화용.
      */
-    public void publishProductEvent(Long productId, Long memberId) {
-        publishProductClick(productId, memberId);
-        logger.info("JSON 상품 이벤트 발행 성공 (직접 파라미터): productId={}, memberId={}", productId, memberId);
+    public void publishLikeChange(LikeChangeEventDTO dto) {
+        try {
+            String partitionKey = dto.getMemberId() + ":" + dto.getProductId();
+            jsonKafkaTemplate.send(likeChangeTopic, partitionKey, dto)
+                    .whenComplete((result, ex) -> {
+                        if (ex == null) {
+                            logger.info("JSON 좋아요 이벤트 발행 성공: productId={}, memberId={}, action={}, topic={}, offset={}",
+                                    dto.getProductId(), dto.getMemberId(), dto.getAction(),
+                                    result.getRecordMetadata().topic(),
+                                    result.getRecordMetadata().offset());
+                        } else {
+                            logger.error("JSON 좋아요 이벤트 발행 실패: productId={}, memberId={}, action={}",
+                                    dto.getProductId(), dto.getMemberId(), dto.getAction(), ex);
+                        }
+                    });
+        } catch (Exception e) {
+            logger.error("JSON 좋아요 이벤트 발행 중 오류: productId={}, memberId={}",
+                    dto.getProductId(), dto.getMemberId(), e);
+            throw new RuntimeException("JSON 좋아요 이벤트 발행 실패", e);
+        }
     }
 }
 

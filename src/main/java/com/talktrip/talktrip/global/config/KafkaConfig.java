@@ -82,6 +82,12 @@ public class KafkaConfig {
         return TopicBuilder.name(topicName).partitions(DEFAULT_TOPIC_PARTITIONS).replicas(DEFAULT_REPLICATION_FACTOR).build();
     }
 
+    @Bean
+    public NewTopic topicLikeChange(
+            @Value("${kafka.topics.like-change:like-change}") String topicName) {
+        return TopicBuilder.name(topicName).partitions(DEFAULT_TOPIC_PARTITIONS).replicas(DEFAULT_REPLICATION_FACTOR).build();
+    }
+
     // ----------- Consumer Factory (Listener) --------------
 
     /**

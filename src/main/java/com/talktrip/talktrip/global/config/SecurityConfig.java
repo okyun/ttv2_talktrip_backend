@@ -1,5 +1,6 @@
 package com.talktrip.talktrip.global.config;
 
+import com.talktrip.talktrip.domain.dau.filter.DauVisitRecordingFilter;
 import com.talktrip.talktrip.domain.member.repository.MemberRepository;
 import com.talktrip.talktrip.global.security.filter.JWTCheckFilter;
 import com.talktrip.talktrip.global.util.JWTUtil;
@@ -24,6 +25,7 @@ public class SecurityConfig {
 
     private final JWTUtil jwtUtil;
     private final MemberRepository memberRepository;
+    private final DauVisitRecordingFilter dauVisitRecordingFilter;
 
     private static final String[] SWAGGER_WHITELIST = {
             "/swagger-ui.html", "/swagger-ui/**",
@@ -60,7 +62,8 @@ public class SecurityConfig {
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(
-                        new JWTCheckFilter(jwtUtil, memberRepository), UsernamePasswordAuthenticationFilter.class);
+                        new JWTCheckFilter(jwtUtil, memberRepository), UsernamePasswordAuthenticationFilter.class)
+                .addFilterAfter(dauVisitRecordingFilter, JWTCheckFilter.class);
 
         return http.build();
     }

@@ -3,13 +3,15 @@ package com.talktrip.talktrip.global.config;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.jsontype.BasicPolymorphicTypeValidator;
-import lombok.RequiredArgsConstructor;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.cache.CacheManager;
 import org.springframework.cache.annotation.EnableCaching;
+import org.springframework.cache.support.NoOpCacheManager;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.cache.RedisCacheConfiguration;
 import org.springframework.data.redis.cache.RedisCacheManager;
+import org.springframework.data.redis.cache.RedisCacheWriter;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.serializer.GenericJackson2JsonRedisSerializer;
 import org.springframework.data.redis.serializer.RedisSerializationContext;
@@ -25,24 +27,25 @@ import java.time.Duration;
  * 2. JSON 직렬화 설정
  * 3. 캐시 만료 시간 설정
  * 4. LocalDateTime 직렬화 지원
+ *
+ * <p>{@code talktrip.cache.redis-enabled=false} 이면 {@link NoOpCacheManager}로 조회 캐시를 쓰지 않습니다.
+ * 재고 락·결제 스트림·좋아요 ZSET({@code talktrip:like:*}) 등 다른 Redis 용도는 그대로입니다.
+ * Spring {@code @Cacheable} 키는 {@code cacheName::…} 형태로, 좋아요 투영과 키 스페이스가 겹치지 않습니다.
  */
 @Configuration
 @EnableCaching
-@RequiredArgsConstructor
 public class CacheConfig {
-
-
-
 
     /**
      * Redis 캐시 매니저 설정
-     * 
+     *
      * @param connectionFactory Redis 연결 팩토리
      * @param objectMapper JSON 직렬화용 ObjectMapper
      * @return 설정된 CacheManager
      */
     @Bean
-    public CacheManager cacheManager(RedisConnectionFactory connectionFactory, ObjectMapper objectMapper) {
+    @ConditionalOnProperty(prefix = "talktrip.cache", name = "redis-enabled", havingValue = "true", matchIfMissing = true)
+    public CacheManager redisCacheManager(RedisConnectionFactory connectionFactory, ObjectMapper objectMapper) {
         // Cache 직렬화는 역직렬화 시점에 반환 타입 정보를 잃기 쉬우므로(LinkedHashMap으로 복원),
         // Redis 캐시 전용 ObjectMapper에 타입 메타데이터를 포함시켜 저장합니다.
         ObjectMapper redisObjectMapper = objectMapper.copy();
@@ -65,13 +68,19 @@ public class CacheConfig {
                 .serializeValuesWith(RedisSerializationContext.SerializationPair.fromSerializer(jsonSerializer))
                 .disableCachingNullValues(); // null 값 캐싱 비활성화
         
-        return RedisCacheManager.builder(connectionFactory)
+        return RedisCacheManager.builder(RedisCacheWriter.nonLockingRedisCacheWriter(connectionFactory))
                 .cacheDefaults(defaultCacheConfig)
-                .withCacheConfiguration("user", createCacheConfig(Duration.ofMinutes(60), redisObjectMapper)) // 사용자 정보: 1시간
-                .withCacheConfiguration("product", createCacheConfig(Duration.ofMinutes(3), redisObjectMapper)) // 상품 목록/검색 캐시(productSearch:v3:…): 3분
-                .withCacheConfiguration("chat", createCacheConfig(Duration.ofMinutes(5), redisObjectMapper)) // 채팅 정보: 5분
-                .withCacheConfiguration("order", createCacheConfig(Duration.ofMinutes(10), redisObjectMapper)) // 주문 정보: 10분
+                .withCacheConfiguration(
+                        "product",
+                        createCacheConfig(Duration.ofMinutes(3), redisObjectMapper)) // 상품 목록 캐시 (talktrip-product-service 와 동일 cacheNames)
+                .transactionAware()
                 .build();
+    }
+
+    @Bean
+    @ConditionalOnProperty(prefix = "talktrip.cache", name = "redis-enabled", havingValue = "false")
+    public CacheManager noOpCacheManager() {
+        return new NoOpCacheManager();
     }
 
     /**

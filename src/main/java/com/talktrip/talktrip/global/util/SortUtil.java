@@ -8,6 +8,9 @@ import java.util.List;
 
 public class SortUtil {
     public static Sort buildSort(List<String> sortParams) {
+        if (sortParams == null || sortParams.size() < 2) {
+            return Sort.by(Sort.Direction.DESC, "updatedAt");
+        }
         String property = sortParams.get(0);
         String directionStr = sortParams.get(1);
         try {

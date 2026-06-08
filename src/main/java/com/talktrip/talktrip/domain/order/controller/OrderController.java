@@ -5,6 +5,11 @@ import com.talktrip.talktrip.domain.order.dto.response.OrderDetailResponseDTO;
 import com.talktrip.talktrip.domain.order.dto.response.OrderHistoryResponseDTO;
 import com.talktrip.talktrip.domain.order.dto.response.OrderResponseDTO;
 import com.talktrip.talktrip.domain.order.service.OrderService;
+import com.talktrip.talktrip.global.exception.CustomException;
+import com.talktrip.talktrip.global.exception.ErrorCode;
+import com.talktrip.talktrip.global.redis.OrderRateLimitProperties;
+import com.talktrip.talktrip.global.redis.OrderRateLimitRedisKeys;
+import com.talktrip.talktrip.global.redis.RedisSlidingWindowRateLimiter;
 import com.talktrip.talktrip.global.security.CustomMemberDetails;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -22,9 +27,17 @@ import org.springframework.web.bind.annotation.*;
 public class OrderController {
 
     private final OrderService orderService;
+    private final RedisSlidingWindowRateLimiter rateLimiter;
+    private final OrderRateLimitProperties orderRateLimitProperties;
 
-    public OrderController(OrderService orderService) {
+    public OrderController(
+            OrderService orderService,
+            RedisSlidingWindowRateLimiter rateLimiter,
+            OrderRateLimitProperties orderRateLimitProperties
+    ) {
         this.orderService = orderService;
+        this.rateLimiter = rateLimiter;
+        this.orderRateLimitProperties = orderRateLimitProperties;
     }
 
     @Operation(summary = "주문 생성", description = "주문을 생성해서 생성된 정보를 반환합니다.")
@@ -35,6 +48,18 @@ public class OrderController {
             @AuthenticationPrincipal CustomMemberDetails memberDetails
     ) {
         Long memberId = memberDetails.getId();
+
+        if (orderRateLimitProperties.isEnabled()) {
+            String redisKey = OrderRateLimitRedisKeys.orderCreate(memberId, productId);
+            boolean allowed = rateLimiter.tryConsumeSafely(
+                    redisKey,
+                    orderRateLimitProperties.getMaxRequests(),
+                    orderRateLimitProperties.getWindowMs()
+            );
+            if (!allowed) {
+                throw new CustomException(ErrorCode.TOO_MANY_REQUESTS);
+            }
+        }
 
         OrderResponseDTO orderResponse = orderService.createOrder(productId, orderRequest, memberId);
 

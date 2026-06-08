@@ -1,11 +1,12 @@
 package com.talktrip.talktrip.domain.like.service;
 
-import com.talktrip.talktrip.domain.like.entity.Like;
-import com.talktrip.talktrip.domain.like.repository.LikeRepository;
+import com.talktrip.talktrip.domain.like.redis.LikeRedisProjectionService;
+import com.talktrip.talktrip.domain.like.redis.LikeWriteBehindQueueService;
 import com.talktrip.talktrip.domain.member.entity.Member;
 import com.talktrip.talktrip.domain.member.enums.MemberRole;
 import com.talktrip.talktrip.domain.member.enums.MemberState;
 import com.talktrip.talktrip.domain.member.repository.MemberRepository;
+import com.talktrip.talktrip.domain.messaging.dto.like.LikeChangeEventDTO;
 import com.talktrip.talktrip.domain.product.dto.response.ProductSummaryResponse;
 import com.talktrip.talktrip.domain.product.entity.Product;
 import com.talktrip.talktrip.domain.product.repository.ProductRepository;
@@ -32,13 +33,18 @@ import java.util.Optional;
 import static com.talktrip.talktrip.global.TestConst.*;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.*;
+import static org.mockito.Mockito.never;
 
 @ExtendWith(MockitoExtension.class)
 class LikeServiceTest {
 
     @InjectMocks LikeService likeService;
-    @Mock LikeRepository likeRepository;
+    @Mock LikeRedisProjectionService likeRedisProjectionService;
+    @Mock LikeWriteBehindQueueService likeWriteBehindQueueService;
     @Mock ProductRepository productRepository;
     @Mock MemberRepository memberRepository;
 
@@ -67,34 +73,37 @@ class LikeServiceTest {
     @Nested @DisplayName("toggleLike(productId, memberId)")
     class ToggleLike {
 
-        @Test @DisplayName("이미 존재 → 삭제")
+        @Test @DisplayName("이미 좋아요 → Redis 제거 + REMOVE 큐")
         void whenExists_delete() {
-            given(likeRepository.existsByProductIdAndMemberId(PRODUCT_ID, USER_ID)).willReturn(true);
+            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(product()));
+            given(memberRepository.findById(USER_ID)).willReturn(Optional.of(user()));
+            given(likeRedisProjectionService.isLiked(USER_ID, PRODUCT_ID)).willReturn(true, true);
 
             likeService.toggleLike(PRODUCT_ID, USER_ID);
 
-            then(likeRepository).should().deleteByProductIdAndMemberId(PRODUCT_ID, USER_ID);
-            then(productRepository).shouldHaveNoInteractions();
-            then(memberRepository).shouldHaveNoInteractions();
-            then(likeRepository).should(never()).save(any());
+            then(likeRedisProjectionService).should().removeLike(USER_ID, PRODUCT_ID);
+            ArgumentCaptor<LikeChangeEventDTO> cap = ArgumentCaptor.forClass(LikeChangeEventDTO.class);
+            then(likeWriteBehindQueueService).should().enqueue(cap.capture());
+            assertThat(cap.getValue().getAction()).isEqualTo(LikeChangeEventDTO.ACTION_REMOVE);
+            then(likeRedisProjectionService).should(never()).addLike(anyLong(), anyLong());
         }
 
-        @Test @DisplayName("없으면 상품/회원 조회 후 저장")
+        @Test @DisplayName("미좋아요 → Redis 추가 + ADD 큐")
         void whenNotExists_save() {
-            Product p = product();
-            Member u = user();
-            given(likeRepository.existsByProductIdAndMemberId(PRODUCT_ID, USER_ID)).willReturn(false);
-            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(p));
-            given(memberRepository.findById(USER_ID)).willReturn(Optional.of(u));
+            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(product()));
+            given(memberRepository.findById(USER_ID)).willReturn(Optional.of(user()));
+            given(likeRedisProjectionService.isLiked(USER_ID, PRODUCT_ID)).willReturn(false, false);
 
             likeService.toggleLike(PRODUCT_ID, USER_ID);
 
-            then(likeRepository).should().save(argThat(l -> l.getProduct() == p && l.getMember() == u));
+            then(likeRedisProjectionService).should().addLike(USER_ID, PRODUCT_ID);
+            ArgumentCaptor<LikeChangeEventDTO> cap = ArgumentCaptor.forClass(LikeChangeEventDTO.class);
+            then(likeWriteBehindQueueService).should().enqueue(cap.capture());
+            assertThat(cap.getValue().getAction()).isEqualTo(LikeChangeEventDTO.ACTION_ADD);
         }
 
         @Test @DisplayName("PRODUCT_NOT_FOUND")
         void productMissing() {
-            given(likeRepository.existsByProductIdAndMemberId(PRODUCT_ID, USER_ID)).willReturn(false);
             given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.empty());
 
             assertThatThrownBy(() -> likeService.toggleLike(PRODUCT_ID, USER_ID))
@@ -104,13 +113,54 @@ class LikeServiceTest {
 
         @Test @DisplayName("USER_NOT_FOUND")
         void userMissing() {
-            given(likeRepository.existsByProductIdAndMemberId(PRODUCT_ID, USER_ID)).willReturn(false);
             given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(product()));
             given(memberRepository.findById(USER_ID)).willReturn(Optional.empty());
 
             assertThatThrownBy(() -> likeService.toggleLike(PRODUCT_ID, USER_ID))
                     .isInstanceOf(MemberException.class)
                     .extracting("errorCode").isEqualTo(ErrorCode.USER_NOT_FOUND);
+        }
+    }
+
+    @Nested @DisplayName("setLikeDesiredState(productId, memberId, liked)")
+    class SetLikeDesiredState {
+
+        @Test @DisplayName("이미 좋아요 상태에서 liked=true → no-op")
+        void alreadyLiked_noop() {
+            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(product()));
+            given(memberRepository.findById(USER_ID)).willReturn(Optional.of(user()));
+            given(likeRedisProjectionService.isLiked(USER_ID, PRODUCT_ID)).willReturn(true);
+
+            likeService.setLikeDesiredState(PRODUCT_ID, USER_ID, true);
+
+            then(likeWriteBehindQueueService).should(never()).enqueue(any());
+            then(likeRedisProjectionService).should(never()).addLike(anyLong(), anyLong());
+            then(likeRedisProjectionService).should(never()).removeLike(anyLong(), anyLong());
+        }
+
+        @Test @DisplayName("미좋아요에서 liked=true → ADD")
+        void addWhenNotLiked() {
+            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(product()));
+            given(memberRepository.findById(USER_ID)).willReturn(Optional.of(user()));
+            given(likeRedisProjectionService.isLiked(USER_ID, PRODUCT_ID)).willReturn(false);
+
+            likeService.setLikeDesiredState(PRODUCT_ID, USER_ID, true);
+
+            then(likeRedisProjectionService).should().addLike(USER_ID, PRODUCT_ID);
+            ArgumentCaptor<LikeChangeEventDTO> cap = ArgumentCaptor.forClass(LikeChangeEventDTO.class);
+            then(likeWriteBehindQueueService).should().enqueue(cap.capture());
+            assertThat(cap.getValue().getAction()).isEqualTo(LikeChangeEventDTO.ACTION_ADD);
+        }
+
+        @Test @DisplayName("이미 미좋아요에서 liked=false → no-op")
+        void alreadyNotLiked_noop() {
+            given(productRepository.findById(PRODUCT_ID)).willReturn(Optional.of(product()));
+            given(memberRepository.findById(USER_ID)).willReturn(Optional.of(user()));
+            given(likeRedisProjectionService.isLiked(USER_ID, PRODUCT_ID)).willReturn(false);
+
+            likeService.setLikeDesiredState(PRODUCT_ID, USER_ID, false);
+
+            then(likeWriteBehindQueueService).should(never()).enqueue(any());
         }
     }
 
@@ -130,8 +180,8 @@ class LikeServiceTest {
         void empty() {
             given(memberRepository.findById(USER_ID)).willReturn(Optional.of(user()));
             Pageable expected = PageRequest.of(PAGE_0, SIZE_9, SORT_BY_UPDATED_DESC);
-            Page<Like> page = new PageImpl<>(List.of(), expected, 0);
-            given(likeRepository.findByMemberId(eq(USER_ID), any(Pageable.class))).willReturn(page);
+            Page<Long> idPage = new PageImpl<>(List.of(), expected, 0);
+            given(likeRedisProjectionService.findLikedProductIds(eq(USER_ID), any(Pageable.class))).willReturn(idPage);
 
             Page<ProductSummaryResponse> res = likeService.getLikedProducts(USER_ID, expected);
 
@@ -139,13 +189,6 @@ class LikeServiceTest {
             assertThat(res.getTotalElements()).isZero();
             assertThat(res.getNumber()).isEqualTo(PAGE_0);
             assertThat(res.getSize()).isEqualTo(SIZE_9);
-
-            ArgumentCaptor<Pageable> pageableCap = ArgumentCaptor.forClass(Pageable.class);
-            then(likeRepository).should().findByMemberId(eq(USER_ID), pageableCap.capture());
-            Pageable sent = pageableCap.getValue();
-            assertThat(sent.getSort()).isEqualTo(SORT_BY_UPDATED_DESC);
-            assertThat(sent.getPageNumber()).isEqualTo(PAGE_0);
-            assertThat(sent.getPageSize()).isEqualTo(SIZE_9);
         }
 
         @Test @DisplayName("정상 조회: 여러 좋아요 → 평균/liked 매핑")
@@ -157,19 +200,18 @@ class LikeServiceTest {
                     Review.builder().product(p1).reviewStar(STAR_4_0).build(),
                     Review.builder().product(p1).reviewStar(STAR_2_0).build()
             ));
-            Like like1 = Like.builder().product(p1).member(u).build();
 
             Product p2 = Product.builder()
                     .id(OTHER_PRODUCT_ID).member(seller())
                     .productName(PRODUCT_NAME_2).description(DESC)
                     .deleted(false).build();
             p2.getReviews().add(Review.builder().product(p2).reviewStar(STAR_5_0).build());
-            Like like2 = Like.builder().product(p2).member(u).build();
 
-            Page<Like> page = new PageImpl<>(List.of(like1, like2), PageRequest.of(PAGE_0, SIZE_9), 2);
+            Page<Long> idPage = new PageImpl<>(List.of(PRODUCT_ID, OTHER_PRODUCT_ID), PageRequest.of(PAGE_0, SIZE_9), 2);
 
             given(memberRepository.findById(USER_ID)).willReturn(Optional.of(u));
-            given(likeRepository.findByMemberId(eq(USER_ID), any(Pageable.class))).willReturn(page);
+            given(likeRedisProjectionService.findLikedProductIds(eq(USER_ID), any(Pageable.class))).willReturn(idPage);
+            given(productRepository.findAllById(List.of(PRODUCT_ID, OTHER_PRODUCT_ID))).willReturn(List.of(p1, p2));
 
             Page<ProductSummaryResponse> res = likeService.getLikedProducts(USER_ID, PageRequest.of(PAGE_0, SIZE_9));
 
@@ -193,8 +235,8 @@ class LikeServiceTest {
         void overflow_passthrough() {
             given(memberRepository.findById(USER_ID)).willReturn(Optional.of(user()));
             Pageable overflow = PageRequest.of(PAGE_3, SIZE_10, SORT_BY_UPDATED_DESC);
-            Page<Like> page = new PageImpl<>(List.of(), overflow, 2);
-            given(likeRepository.findByMemberId(eq(USER_ID), any(Pageable.class))).willReturn(page);
+            Page<Long> idPage = new PageImpl<>(List.of(), overflow, 2);
+            given(likeRedisProjectionService.findLikedProductIds(eq(USER_ID), any(Pageable.class))).willReturn(idPage);
 
             Page<ProductSummaryResponse> res = likeService.getLikedProducts(USER_ID, overflow);
 

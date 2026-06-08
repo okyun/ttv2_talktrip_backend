@@ -22,6 +22,8 @@ public enum ErrorCode {
     ORDER_EMPTY(HttpStatus.BAD_REQUEST, "주문에 상품이 존재하지 않습니다."),
     ORDER_NOT_COMPLETED(HttpStatus.BAD_REQUEST, "완료된 주문만 리뷰 작성이 가능합니다."),
 
+    TOO_MANY_REQUESTS(HttpStatus.TOO_MANY_REQUESTS, "요청이 많아 잠시 후 다시 시도해주세요."),
+
     IMAGE_UPLOAD_FAILED(HttpStatus.INTERNAL_SERVER_ERROR, "S3 이미지 업로드에 실패했습니다."),
     IMAGE_DELETE_FAILED(HttpStatus.INTERNAL_SERVER_ERROR, "S3 이미지 삭제에 실패했습니다.");
 
